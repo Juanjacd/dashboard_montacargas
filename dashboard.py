@@ -3,7 +3,12 @@
 # =========================================================
 
 # ---------------- [S0] Imports y setup -------------------
-from cfg import APP_TITLE, APP_TAGLINE
+try:
+    from cfg import APP_TITLE, APP_TAGLINE
+except Exception:
+    # Fallback si no existe cfg.py
+    APP_TITLE = "DASHBOARD MONTACARGAS — TM + Órdenes OT + Inicio/Fin (auto horas extra)"
+    APP_TAGLINE = "Monitoreo operativo con tiempos muertos, órdenes y horas extra"
 
 import numpy as np
 if not hasattr(np, "bool"):
