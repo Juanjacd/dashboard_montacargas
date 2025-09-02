@@ -6,7 +6,6 @@
 try:
     from cfg import APP_TITLE, APP_TAGLINE
 except Exception:
-    # Fallback si no existe cfg.py
     APP_TITLE = "DASHBOARD MONTACARGAS — TM + Órdenes OT + Inicio/Fin (auto horas extra)"
     APP_TAGLINE = "Monitoreo operativo con tiempos muertos, órdenes y horas extra"
 
@@ -18,9 +17,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import sqlite3, hashlib, re, unicodedata
-from datetime import time as dtime
-from typing import Optional, List
+import sqlite3, hashlib, re, unicodedata, io
+from datetime import time as dtime, date, datetime, timedelta
+from typing import Optional, List, Sequence
 from collections import Counter
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -58,133 +57,53 @@ if not hasattr(st, "divider"):
     st.divider = _divider
 
 # =========================================================
-# [S1] Estilos (con modo oscuro global compatible) + Título responsive
+# [S1] Estilos + header
 # =========================================================
 BASE_STYLE = f"""
 <style>
-:root{{
-  --bg:#ffffff; --panel:#f8fafc; --ink:#0f172a; --muted:#64748b; --border:#e5e7eb;
-  --accent:#0ea5e9;
-  --header-h: 64px;
-}}
-
-/* ===== Header fijo + separación del contenido ===== */
-header[data-testid="stHeader"]{{
-  height: var(--header-h) !important;
-  background-color: var(--bg) !important;
-  border-bottom:1px solid var(--border) !important;
-  z-index: 500; /* [MOBILE] asegura que no tape controles */
-}}
-/* Empuja el contenido para que el header no tape el hero */
-[data-testid="stAppViewContainer"] > .main{{
-  padding-top: calc(var(--header-h) + 12px) !important;
-}}
-/* Evita doble padding interno de Streamlit */
-main .block-container{{ padding-top: 0 !important; }}
-
-/* ===== Colores base ===== */
-html, body, #root, .stApp,
-main, .main,
-[data-testid="stAppViewContainer"],
-[data-testid="stSidebar"]{{
-  background-color: var(--bg) !important;
-  color: var(--ink) !important;
-}}
-section[data-testid="stSidebar"]{{
-  background-color: var(--panel) !important;
-  border-right:1px solid var(--border);
-}}
-
-/* ===== Tarjetas/títulos ===== */
-div.hero{{ 
-  margin: 0 !important;
-  width: 100%;
-  border:1px solid var(--border); border-radius:14px;
-  padding:14px 16px; background:var(--panel);
-}}
+:root{{ --bg:#ffffff; --panel:#f8fafc; --ink:#0f172a; --muted:#64748b; --border:#e5e7eb; --accent:#0ea5e9; --header-h:64px; }}
+header[data-testid="stHeader"]{{ height:var(--header-h)!important; background:var(--bg)!important; border-bottom:1px solid var(--border)!important; z-index:500; }}
+[data-testid="stAppViewContainer"] > .main{{ padding-top:calc(var(--header-h) + 12px)!important; }}
+main .block-container{{ padding-top:0!important; }}
+html, body, #root, .stApp, main, .main, [data-testid="stAppViewContainer"], [data-testid="stSidebar"]{{ background:var(--bg)!important; color:var(--ink)!important; }}
+section[data-testid="stSidebar"]{{ background:var(--panel)!important; border-right:1px solid var(--border); }}
+div.hero{{ margin:0!important; width:100%; border:1px solid var(--border); border-radius:14px; padding:14px 16px; background:var(--panel); }}
 .hero-wrap{{ display:flex; flex-direction:column; gap:.25rem; width:100%; }}
-h1.hero-title{{ 
-  margin:0; line-height:1.15; font-weight:800; color:var(--ink);
-  font-size: clamp(20px, 2.6vw + 8px, 34px);
-  text-wrap: balance; overflow-wrap:anywhere;
-}}
-div.hero-sub{{ font-size:clamp(12px, 1.1vw + 8px, 15px); color:var(--muted); }}
-
+h1.hero-title{{ margin:0; line-height:1.15; font-weight:800; color:var(--ink); font-size:clamp(20px,2.6vw + 8px,34px); text-wrap:balance; overflow-wrap:anywhere; }}
+div.hero-sub{{ font-size:clamp(12px,1.1vw + 8px,15px); color:var(--muted); }}
 h2.section-title{{ font-weight:700; font-size:18px; margin:0; color:var(--ink); }}
 div.section{{ border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:var(--panel); margin:14px 0 8px 0; }}
-
 .note-box{{ border:1px solid var(--border); border-radius:12px; padding:12px 14px; background:var(--panel); color:var(--ink); font-size:14px; }}
 .kpi-card{{ border:1px solid var(--border); background:var(--panel); border-radius:14px; padding:12px 14px; margin-left:10px; color:var(--ink); max-width:420px; }}
 .kpi-title{{ display:flex; align-items:center; gap:8px; font-weight:800; font-size:20px; margin:2px 0 12px 0; }}
-.kpi-grid{{ display:grid; grid-template-columns: 1fr; gap:12px; }}
+.kpi-grid{{ display:grid; grid-template-columns:1fr; gap:12px; }}
 .kpi-item .label{{ color:var(--muted); font-size:13px; margin-bottom:2px; }}
 .kpi-item .value{{ color:var(--ink); font-size:32px; font-weight:800; }}
-
-/* ===== Inputs ===== */
 [data-baseweb="select"]>div{{ border-radius:10px; border:1px solid var(--border); background:var(--bg); }}
 [data-baseweb="select"]>div:focus-within{{ box-shadow:0 0 0 2px var(--accent); border-color:var(--accent); }}
-input, textarea{{ background:var(--bg)!important; color:var(--ink)!important;
-  border-radius:10px!important; border:1px solid var(--border)!important; }}
-
-/* Usuarios en ejes en negrita */
+input, textarea{{ background:var(--bg)!important; color:var(--ink)!important; border-radius:10px!important; border:1px solid var(--border)!important; }}
 g.xtick text, g.ytick text{{ font-weight:700; }}
-
-/* ===== [MOBILE] Flecha para abrir/cerrar sidebar siempre visible ===== */
-[data-testid="collapsedControl"]{{
-  position: fixed !important; /* [MOBILE] que no la tape nada */
-  top: 10px; left: 10px;
-  z-index: 2000 !important;
-  display: flex !important; visibility: visible !important; opacity: 1 !important;
+[data-testid="collapsedControl"]{{ position:fixed!important; top:10px; left:10px; z-index:2000!important; display:flex!important; visibility:visible!important; opacity:1!important; }}
+[data-testid="collapsedControl"] svg{{ color:var(--ink)!important; fill:currentColor!important; }}
+@media (max-width:768px){{
+  section[data-testid="stSidebar"]{{ position:relative!important; z-index:1200!important; box-shadow:0 6px 20px rgba(0,0,0,.35); border-right:1px solid var(--border); }}
+  [data-testid="stAppViewContainer"]{{ position:relative; z-index:1; }}
+  section[data-testid="stSidebar"] > div{{ max-height:calc(100vh - var(--header-h) - 8px); overflow-y:auto; }}
+  .block-container{{ padding:8px 10px!important; }}
+  .js-plotly-plot .xtick text, .js-plotly-plot .ytick text, .js-plotly-plot .legend text{{ font-size:11px!important; }}
+  .main-svg{{ overflow:visible!important; }}
 }}
-[data-testid="collapsedControl"] svg{{ color: var(--ink) !important; fill: currentColor !important; }}
-
-/* =========================
-   [MOBILE] Ajustes responsivos
-   ========================= */
-@media (max-width: 768px){{
-  /* [MOBILE] separa visualmente sidebar del tablero (no se "juntan") */
-  section[data-testid="stSidebar"]{{
-    position: relative !important;
-    z-index: 1200 !important;
-    box-shadow: 0 6px 20px rgba(0,0,0,.35);
-    border-right:1px solid var(--border);
-  }}
-  [data-testid="stAppViewContainer"]{{ position: relative; z-index: 1; }}
-
-  /* [MOBILE] scrollbar interno del sidebar para que no invada el tablero */
-  section[data-testid="stSidebar"] > div{{
-    max-height: calc(100vh - var(--header-h) - 8px);
-    overflow-y: auto;
-  }}
-
-  /* [MOBILE] padding contenido más compacto */
-  .block-container{{ padding: 8px 10px !important; }}
-
-  /* [MOBILE] textos de ejes/leyenda ligeramente más grandes */
-  .js-plotly-plot .xtick text, .js-plotly-plot .ytick text{{ font-size:11px !important; }}
-  .js-plotly-plot .legend text{{ font-size:11px !important; }}
-
-  /* [MOBILE] evita cortes de labels */
-  .main-svg{{ overflow: visible !important; }}
-}}
-
-/* [MOBILE] popover del datepicker y selects por encima (no se cierra al cambiar mes) */
-[data-baseweb="popover"], .stDateInput [role="dialog"], .stDateInput div[data-baseweb="popover"]{{
-  z-index: 3000 !important;
-}}
+[data-baseweb="popover"], .stDateInput [role="dialog"], .stDateInput div[data-baseweb="popover"]{{ z-index:3000!important; }}
 </style>
-
 <div class="hero"><div class="hero-wrap">
   <h1 class="hero-title">{APP_TITLE}</h1>
   <div class="hero-sub">{APP_TAGLINE}</div>
 </div></div>
 """
-
 st.markdown(BASE_STYLE, unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("---")
-    # [MOBILE] Modo oscuro por defecto para que app + gráficas arranquen consistentes
     dark = st.checkbox("🌙 Modo oscuro", value=True, help="Cambia colores (app + gráficas)")
 
 if dark:
@@ -214,9 +133,8 @@ def apply_plot_theme(fig):
         font=dict(color=("#e5e7eb" if is_dark else "#0f172a")),
         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02, bgcolor="rgba(0,0,0,0)"),
         showlegend=True,
-        hoverlabel=dict(font_size=12)  # [MOBILE]
+        hoverlabel=dict(font_size=12)
     )
-    # [MOBILE] ejes en enteros
     fig.update_xaxes(showgrid=False, zeroline=False, showline=False, ticks="", tickformat=",d")
     fig.update_yaxes(showgrid=False, zeroline=False, showline=False, ticks="", tickformat=",d")
 
@@ -225,7 +143,6 @@ ANN_COL  = "#e5e7eb" if dark else "#6B7280"
 # =========================================================
 # [S2] Reglas de turnos y paletas
 # =========================================================
-THRESH_MIN = 15
 TURNOS = {
     "Turno A": {"start": dtime(5, 0),  "end": dtime(13, 55),
                 "lunch": (dtime(8, 20), dtime(9, 0)),
@@ -238,13 +155,7 @@ LATE_B_CUTOFF = dtime(3, 0)
 
 ITEM_WAZ = "WA-ZONE"
 ITEM_BODEGA = "BODEGA-INT"
-EXT_ITEMS = [
-    "CALIDAD-OK","TRANSFER","INSPECCIÓN","CARPA",
-    ITEM_WAZ, ITEM_BODEGA, "UBIC.SOBRESTOCK","REACOM.SOBRESTOCK"
-]
-
-ITEMS_HIDDEN = []  # puedes dejarlo vacío
-
+EXT_ITEMS = ["CALIDAD-OK","TRANSFER","INSPECCIÓN","CARPA", ITEM_WAZ, ITEM_BODEGA, "UBIC.SOBRESTOCK","REACOM.SOBRESTOCK"]
 PALETTES = {
   "Petróleo & Tierra": {
     "CALIDAD-OK":"#2A9D8F","TRANSFER":"#457B9D","INSPECCIÓN":"#3A6B35","CARPA":"#B65E3C",
@@ -259,6 +170,7 @@ PALETTES = {
     ITEM_WAZ:"#FFD54F", ITEM_BODEGA:"#90A4AE","UBIC.SOBRESTOCK":"#69F0AE","REACOM.SOBRESTOCK":"#7C4DFF",
   }
 }
+EXT_COLOR_MAP = PALETTES["Petróleo & Tierra"]
 
 # =========================================================
 # [S3] Normalización / clasificación
@@ -285,10 +197,9 @@ def pick_col(cols_map: dict, *aliases) -> Optional[str]:
             if key in nk or nk in key: return orig
     return None
 
-# [FIX-HORA] Parser robusto para “5:34:48 a. m.” / “p. m.”, NBSP y 12/24h
+# Parser robusto para “5:34:48 a. m.” / “p. m.”, NBSP y 12/24h
 def to_time(x):
-    if pd.isna(x):
-        return None
+    if pd.isna(x): return None
     try:
         if hasattr(x, "hour"):
             return dtime(int(x.hour), int(getattr(x, "minute", 0)), int(getattr(x, "second", 0)))
@@ -300,17 +211,13 @@ def to_time(x):
             return dtime(int(dtv.hour), int(dtv.minute), int(dtv.second))
         except Exception:
             pass
-
     s = str(x).strip()
-    if not s:
-        return None
-    # normaliza espacios duros y AM/PM español
+    if not s: return None
     s_norm = s.replace("\u00A0", " ").replace("\u202F", " ")
     s_norm = re.sub(r"\s+", " ", s_norm).strip()
     s_norm = re.sub(r"(?i)\ba\.?\s*m\.?\b", "AM", s_norm)
     s_norm = re.sub(r"(?i)\bp\.?\s*m\.?\b", "PM", s_norm)
     s_norm = s_norm.replace("a.m.", "AM").replace("p.m.", "PM").replace("a.m", "AM").replace("p.m", "PM")
-
     for fmt in ("%I:%M:%S %p", "%I:%M %p", "%H:%M:%S", "%H:%M"):
         try:
             dtv = pd.to_datetime(s_norm, format=fmt)
@@ -346,7 +253,7 @@ def _contains_any(txt: str, patterns: List[str]) -> bool:
 def _item_base(ubic_proced: str, ubic_dest: str) -> Optional[str]:
     up = str(ubic_proced or ""); ud = str(ubic_dest or "")
     both_txt = f"{up} | {ud}"; compact = _norm_compact(both_txt); toks = set(_norm_tokens(both_txt))
-    if "wazone" in compact or ("wa" in toks and "zone" in toks) or "zonav" in compact: return ITEM_WAZ  # [BUGFIX-CONSTANTE]
+    if "wazone" in compact or ("wa" in toks and "zone" in toks) or "zonav" in compact: return ITEM_WAZ
     if _contains_any(compact, ["transfer","traslado","trasl","transferen","trasfer","transfe","transf"]): return "TRANSFER"
     if _contains_any(compact, ["inspeccion","inspection","inspec","insp","insp."]): return "INSPECCIÓN"
     if _contains_any(compact, ["carpa","carpas"]): return "CARPA"
@@ -389,96 +296,170 @@ def item_ext(ubic_proced: str, ubic_dest: str) -> Optional[str]:
     if looks_like_slot_code(up) and looks_like_slot_code(ud): return ITEM_BODEGA
     return None
 
+def classify_any(row) -> Optional[str]:
+    raw = canon_item_from_text(row.get("ItemRaw"))
+    if raw: return raw
+    base = item_ext(row.get("Ubic.proced"), row.get("Ubicación de destino"))
+    return base
+
 # =========================================================
-# [S4] SQLite (persistencia)
+# [S4] SQLite (persistencia) + migración/índices
 # =========================================================
 TABLE = "ordenes"
+
+def connect(path):
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA temp_store=MEMORY")
+    try:
+        con.execute("PRAGMA mmap_size=30000000000")
+    except Exception:
+        pass
+    return con
+
 def ensure_db(path):
-    con = sqlite3.connect(path); cur = con.cursor()
+    con = connect(path); cur = con.cursor()
     cur.execute(f"""
         CREATE TABLE IF NOT EXISTS {TABLE}(
             id TEXT PRIMARY KEY,
             usuario TEXT, fecha TEXT, time TEXT, turno TEXT, datetime TEXT,
-            orden TEXT, ubic_proced TEXT, ubic_destino TEXT, itemraw TEXT
+            orden TEXT, ubic_proced TEXT, ubic_destino TEXT, itemraw TEXT,
+            fecha_oper TEXT, datetime_oper TEXT, itemext TEXT
         )
     """)
     cur.execute(f"PRAGMA table_info({TABLE})")
     existing_cols = {row[1].lower() for row in cur.fetchall()}
-    required = ["id","usuario","fecha","time","turno","datetime","orden","ubic_proced","ubic_destino","itemraw"]
+    required = ["id","usuario","fecha","time","turno","datetime","orden","ubic_proced","ubic_destino","itemraw","fecha_oper","datetime_oper","itemext"]
     for col in required:
         if col not in existing_cols:
             cur.execute(f"ALTER TABLE {TABLE} ADD COLUMN {col} TEXT")
+    # índices
+    cur.executescript(f"""
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_ord
+      ON {TABLE}(usuario,orden,ubic_proced,ubic_destino,itemraw,datetime);
+    CREATE INDEX IF NOT EXISTS ix_dt ON {TABLE}(datetime);
+    CREATE INDEX IF NOT EXISTS ix_dtoper ON {TABLE}(datetime_oper);
+    CREATE INDEX IF NOT EXISTS ix_itemext ON {TABLE}(itemext);
+    """)
     con.commit(); con.close()
 
 def make_uid(row):
     dtv = pd.to_datetime(row.get("Datetime"), errors="coerce")
-    dtv = pd.NaT if pd.isna(dtv) else dtv.floor("min")
-    base = f"{row.get('Usuario','')}|{row.get('Fecha','')}|{str(dtv)}|{str(row.get('Orden') or '')}"
+    stamp = dtv.isoformat(timespec="seconds") if pd.notnull(dtv) else ""
+    parts = [
+        str(row.get("Usuario") or ""),
+        str(row.get("Orden") or ""),
+        str(row.get("Ubic.proced") or ""),
+        str(row.get("Ubicación de destino") or ""),
+        str(row.get("ItemRaw") or ""),
+        stamp,
+    ]
+    base = "|".join(parts)
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
-def upsert_df(path, df):
-    if df.empty: return 0
-    con = sqlite3.connect(path); cur = con.cursor()
-    df2 = df.copy(); df2["Datetime"] = pd.to_datetime(df2["Datetime"]).dt.floor("min")
-    df2["id"] = df2.apply(make_uid, axis=1)
-    rows = []
-    for _, r in df2.iterrows():
-        rows.append((r["id"], r.get("Usuario"),
-                     str(r.get("Fecha")) if pd.notnull(r.get("Fecha")) else None,
-                     str(r.get("Time")) if pd.notnull(r.get("Time")) else None,
-                     r.get("Turno"),
-                     r.get("Datetime").isoformat() if pd.notnull(r["Datetime"]) else None,
-                     str(r.get("Orden") or None),
-                     r.get("Ubic.proced"), r.get("Ubicación de destino"),
-                     r.get("ItemRaw") if "ItemRaw" in df2.columns else None))
-    cur.executemany(
-        f"""INSERT OR REPLACE INTO {TABLE}
-            (id,usuario,fecha,time,turno,datetime,orden,ubic_proced,ubic_destino,itemraw)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        rows
-    )
-    con.commit(); con.close()
-    return len(rows)
-
-def read_all(path) -> pd.DataFrame:
-    con = sqlite3.connect(path)
-    try:
-        df = pd.read_sql_query(f"SELECT * FROM {TABLE}", con)
-    except Exception:
-        df = pd.DataFrame(columns=["id","usuario","fecha","time","turno","datetime","orden","ubic_proced","ubic_destino","itemraw"])
-    con.close()
-    if df.empty: return df
-    df.rename(columns={"usuario":"Usuario","fecha":"Fecha","time":"TimeStr",
-                       "turno":"Turno","datetime":"Datetime","orden":"Orden",
-                       "ubic_proced":"Ubic.proced","ubic_destino":"Ubicación de destino",
-                       "itemraw":"ItemRaw"}, inplace=True)
-    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True).dt.date  # [FECHA-DDMM]
-    df["Time"] = df["Datetime"].dt.time
-    return df
-
-def clear_db(path):
-    con = sqlite3.connect(path); con.execute(f"DELETE FROM {TABLE}"); con.commit(); con.close()
-
-# =========================================================
-# [S5] Fecha operativa + marca de horas extra
-# =========================================================
 def apply_oper_day(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     if "Turno" not in d.columns or d["Turno"].isna().any():
         d["Turno"] = d["Time"].apply(turno_by_time)
-
     extra_mask = (d["Turno"] == "Turno B") & (d["Time"].apply(lambda x: x is not None and x < LATE_B_CUTOFF))
     d["IsExtra"] = extra_mask
-
     d["FechaOper"] = pd.to_datetime(d["Fecha"])
     d.loc[extra_mask, "FechaOper"] = d.loc[extra_mask, "FechaOper"] - pd.Timedelta(days=1)
-
     d["DatetimeOper"] = d.apply(
         lambda r: pd.Timestamp.combine(pd.Timestamp(r["FechaOper"]).date(), r["Time"]) if (pd.notnull(r["FechaOper"]) and r["Time"] is not None) else pd.NaT,
         axis=1
     )
     return d
+
+def upsert_df(path, df):
+    if df.empty: return 0
+    df2 = df.copy()
+    df2["Datetime"] = pd.to_datetime(df2["Datetime"], errors="coerce")
+    # enrich
+    tmp = apply_oper_day(df2)
+    df2["FechaOper"] = tmp["FechaOper"].dt.date
+    df2["DatetimeOper"] = tmp["DatetimeOper"]
+    # itemext
+    if "ItemExt" not in df2.columns:
+        df2["ItemExt"] = df2.apply(lambda r: classify_any(r), axis=1)
+    df2["id"] = df2.apply(make_uid, axis=1)
+
+    rows = []
+    for _, r in df2.iterrows():
+        rows.append((
+            r["id"], r.get("Usuario"),
+            str(r.get("Fecha")) if pd.notnull(r.get("Fecha")) else None,
+            str(r.get("Time")) if pd.notnull(r.get("Time")) else None,
+            r.get("Turno"),
+            r.get("Datetime").strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(r["Datetime"]) else None,
+            str(r.get("Orden") or None),
+            r.get("Ubic.proced"), r.get("Ubicación de destino"),
+            r.get("ItemRaw") if "ItemRaw" in df2.columns else None,
+            # oper
+            r.get("FechaOper").strftime("%Y-%m-%d") if pd.notnull(r.get("FechaOper")) else None,
+            r.get("DatetimeOper").strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(r.get("DatetimeOper")) else None,
+            r.get("ItemExt")
+        ))
+    con = connect(path); cur = con.cursor()
+    cur.executemany(
+        f"""INSERT OR REPLACE INTO {TABLE}
+        (id,usuario,fecha,time,turno,datetime,orden,ubic_proced,ubic_destino,itemraw,
+         fecha_oper,datetime_oper,itemext)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows
+    )
+    con.commit(); con.close()
+    return len(rows)
+
+def read_all(path) -> pd.DataFrame:
+    con = connect(path)
+    try:
+        df = pd.read_sql_query(f"SELECT * FROM {TABLE}", con)
+    except Exception:
+        df = pd.DataFrame(columns=["id","usuario","fecha","time","turno","datetime","orden","ubic_proced","ubic_destino","itemraw","fecha_oper","datetime_oper","itemext"])
+    con.close()
+    if df.empty: return df
+    df.rename(columns={"usuario":"Usuario","fecha":"Fecha","time":"TimeStr","turno":"Turno","datetime":"Datetime","orden":"Orden",
+                       "ubic_proced":"Ubic.proced","ubic_destino":"Ubicación de destino","itemraw":"ItemRaw",
+                       "fecha_oper":"FechaOper","datetime_oper":"DatetimeOper","itemext":"ItemExt"}, inplace=True)
+    # parse
+    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True).dt.date
+    df["DatetimeOper"] = pd.to_datetime(df["DatetimeOper"], errors="coerce")
+    df["FechaOper"] = pd.to_datetime(df["FechaOper"], errors="coerce", dayfirst=True)
+    df["Time"] = df["Datetime"].dt.time
+    return df
+
+def fetch_filtered(path, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                   users: Optional[Sequence[str]]=None,
+                   turns: Optional[Sequence[str]]=None,
+                   items: Optional[Sequence[str]]=None) -> pd.DataFrame:
+    con = connect(path)
+    q = f"SELECT * FROM {TABLE} WHERE datetime_oper >= ? AND datetime_oper < ?"
+    params: List = [start_ts.strftime("%Y-%m-%d %H:%M:%S"), end_ts.strftime("%Y-%m-%d %H:%M:%S")]
+    if users:
+        q += f" AND usuario IN ({','.join(['?']*len(users))})"; params += list(users)
+    if turns:
+        q += f" AND turno IN ({','.join(['?']*len(turns))})"; params += list(turns)
+    if items:
+        q += f" AND itemext IN ({','.join(['?']*len(items))})"; params += list(items)
+    q += " ORDER BY datetime_oper ASC"
+    df = pd.read_sql_query(q, con, params=params)
+    con.close()
+    if df.empty: return df
+    # rename and parse
+    df.rename(columns={"usuario":"Usuario","fecha":"Fecha","time":"TimeStr","turno":"Turno","datetime":"Datetime","orden":"Orden",
+                       "ubic_proced":"Ubic.proced","ubic_destino":"Ubicación de destino","itemraw":"ItemRaw",
+                       "fecha_oper":"FechaOper","datetime_oper":"DatetimeOper","itemext":"ItemExt"}, inplace=True)
+    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True).dt.date
+    df["DatetimeOper"] = pd.to_datetime(df["DatetimeOper"], errors="coerce")
+    df["FechaOper"] = pd.to_datetime(df["FechaOper"], errors="coerce", dayfirst=True)
+    df["Time"] = df["Datetime"].dt.time
+    return df
+
+def clear_db(path):
+    con = connect(path); con.execute(f"DELETE FROM {TABLE}"); con.commit(); con.close()
 
 # =========================================================
 # [S6] Carga Excel
@@ -504,7 +485,7 @@ def load_excel(file, sheet_name="Hoja1") -> pd.DataFrame:
 
     out = pd.DataFrame({
         "Usuario": df[col_usuario].astype(str).str.strip(),
-        "Fecha":   pd.to_datetime(df[col_fecha], errors="coerce", dayfirst=True).dt.date,  # [FECHA-DDMM]
+        "Fecha":   pd.to_datetime(df[col_fecha], errors="coerce", dayfirst=True).dt.date,
         "Time":    df[col_hora].apply(to_time),
     })
     out["Hora"] = out["Time"].apply(lambda t: t.hour if t else None)
@@ -518,7 +499,9 @@ def load_excel(file, sheet_name="Hoja1") -> pd.DataFrame:
         lambda r: pd.Timestamp.combine(r["Fecha"], r["Time"]) if (pd.notnull(r["Fecha"]) and r["Time"] is not None) else pd.NaT,
         axis=1
     )
+    raw_n = len(out)
     out = out.dropna(subset=["Fecha","Time","Datetime"])
+    st.caption(f"Filas válidas tras parseo: {len(out)}/{raw_n}")
     return out[["Usuario","Fecha","Hora","Time","Turno","Datetime","Orden","Ubic.proced","Ubicación de destino","ItemRaw"]]
 
 # =========================================================
@@ -541,91 +524,154 @@ with st.sidebar:
         st.caption("Histórico SQLite")
         use_db = st.checkbox("Usar histórico", value=True)
         DB_PATH = st.text_input("Archivo DB", value="montacargas.db")
-        col1, col2 = st.columns(2)
+        USE_SQL = st.checkbox("Usar filtro SQL (rápido)", value=True)
+        col1, col2, col3 = st.columns(3)
         with col1: btn_clear = st.button("🧹 Limpiar histórico")
         with col2: btn_reload = st.button("🔁 Recargar histórico")
+        with col3: btn_export = st.button("⬇️ Exportar XLSX")
 
     with st.expander("⚙️ Preferencias", expanded=False):
         chart_type = st.selectbox("Orientación (Gráfica TM)", ["Barra horizontal", "Barra vertical"])
         pal_name = st.selectbox("🎨 Paleta", list(PALETTES.keys()), index=0)
+        EXT_COLOR_MAP = PALETTES[pal_name]
+        THRESH_MIN = st.slider("Umbral TM (min)", 5, 60, 15, 5)
         st.session_state["pal_name"] = pal_name
         st.session_state["chart_type"] = chart_type
+        st.session_state["THRESH_MIN"] = THRESH_MIN
 
-EXT_COLOR_MAP = PALETTES[st.session_state.get("pal_name", "Petróleo & Tierra")]
+with st.sidebar:
+    with st.expander("⏱ Presets de fechas", expanded=False):
+        preset = st.selectbox("Rango rápido", ["Todo","Hoy","Ayer","Últimos 7","Últimos 30","Mes actual"], index=0)
 
+# =========================================================
+# [S7.1] Carga y DB
+# =========================================================
 if up is None and 'use_db' in locals() and not use_db:
     st.warning("Sube un Excel para empezar o activa el histórico."); st.stop()
 
+ensure_db(DB_PATH)
+
 df_new = pd.DataFrame()
 if up is not None:
-    try: df_new = load_excel(up, hoja)
+    try:
+        df_new = load_excel(up, hoja)
     except Exception as e:
         st.error(f"❌ No pude leer el Excel: {e}"); st.stop()
 
-if 'use_db' not in locals(): use_db = True
-if 'DB_PATH' not in locals(): DB_PATH = "montacargas.db"
-
-ensure_db(DB_PATH)
 if use_db:
-    if btn_clear: clear_db(DB_PATH); st.success("Histórico limpiado.")
-    if not df_new.empty: upsert_df(DB_PATH, df_new)
-    if btn_reload: clear_cache_compat(); st.success("Recargado."); rerun_compat()
-    df = read_all(DB_PATH)
+    if btn_clear:
+        clear_db(DB_PATH); st.success("Histórico limpiado.")
+    if not df_new.empty:
+        inserted = upsert_df(DB_PATH, df_new)
+        st.success(f"Guardadas/actualizadas: {inserted} filas")
+    if btn_reload:
+        clear_cache_compat(); st.success("Recargado."); rerun_compat()
+    df_all = read_all(DB_PATH)
 else:
-    df = df_new.copy()
+    df_all = df_new.copy()
+    if not df_all.empty:
+        # asegurar columnas oper si no hay DB
+        tmp = apply_oper_day(df_all)
+        df_all["FechaOper"] = tmp["FechaOper"]
+        df_all["DatetimeOper"] = tmp["DatetimeOper"]
+        if "ItemExt" not in df_all.columns:
+            df_all["ItemExt"] = df_all.apply(lambda r: classify_any(r), axis=1)
 
-if df.empty:
+if df_all.empty:
     st.info("No hay datos para visualizar aún."); st.stop()
 
-# --- Fecha operativa aplicada + marca IsExtra ---
-df = apply_oper_day(df)
-df = df[df["Turno"].isin(["Turno A","Turno B"])].copy()
-
-# ---------------- Filtros ----------------
+# ---------------- Filtros base ----------------
 with st.sidebar:
-    users = sorted(df["Usuario"].dropna().unique().tolist())
+    users = sorted(df_all["Usuario"].dropna().unique().tolist())
     turns = ["Turno A","Turno B"]
-    fmin, fmax = df["FechaOper"].min().date(), df["FechaOper"].max().date()
+    fmin, fmax = df_all["FechaOper"].min().date(), df_all["FechaOper"].max().date()
+
+    # presets
+    if preset == "Hoy":
+        sel_range = (date.today(), date.today())
+    elif preset == "Ayer":
+        sel_range = (date.today()-timedelta(days=1), date.today()-timedelta(days=1))
+    elif preset == "Últimos 7":
+        sel_range = (date.today()-timedelta(days=6), date.today())
+    elif preset == "Últimos 30":
+        sel_range = (date.today()-timedelta(days=29), date.today())
+    elif preset == "Mes actual":
+        first = date.today().replace(day=1)
+        last = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        sel_range = (first, last)
+    else:
+        sel_range = (fmin, fmax)
 
     sel_users = st.multiselect("Usuarios", users, [])
     sel_turns = st.multiselect("Turnos", turns, [])
-    sel_range = st.date_input("Rango de fechas", (fmin, fmax), key="date_range", format="YYYY-MM-DD")  # [MOBILE] clave estable
 
-start_ts, end_ts = (
-    (pd.Timestamp(sel_range[0]), pd.Timestamp(sel_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
-    if isinstance(sel_range, (list, tuple)) and len(sel_range) == 2
-    else (pd.Timestamp(fmin), pd.Timestamp(fmax) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
-)
-df_pre = df.copy()
-if sel_users: df_pre = df_pre[df_pre["Usuario"].isin(sel_users)]
-if sel_turns: df_pre = df_pre[df_pre["Turno"].isin(sel_turns)]
-df_pre = df_pre[(df_pre["DatetimeOper"] >= start_ts) & (df_pre["DatetimeOper"] <= end_ts)]
+# rango exclusivo fin
+start_ts = pd.Timestamp(sel_range[0])
+end_ts   = pd.Timestamp(sel_range[1]) + pd.Timedelta(days=1)
 
-def classify_any(row) -> Optional[str]:
-    raw = canon_item_from_text(row.get("ItemRaw"))
-    if raw: return raw
-    base = item_ext(row.get("Ubic.proced"), row.get("Ubicación de destino"))
-    return base
+# -------- Items disponibles según rango rápido --------
+if USE_SQL and use_db:
+    # obtener items del rango para el selector
+    df_tmp_items = fetch_filtered(DB_PATH, start_ts, end_ts, sel_users or None, sel_turns or None, None)
+    avail_items = [it for it in EXT_ITEMS if it in set(df_tmp_items["ItemExt"].dropna().unique().tolist())]
+else:
+    tmp_mask = (df_all["DatetimeOper"] >= start_ts) & (df_all["DatetimeOper"] < end_ts)
+    tmp_df = df_all[tmp_mask]
+    if sel_users: tmp_df = tmp_df[tmp_df["Usuario"].isin(sel_users)]
+    if sel_turns: tmp_df = tmp_df[tmp_df["Turno"].isin(sel_turns)]
+    avail_items = [it for it in EXT_ITEMS if it in set(tmp_df["ItemExt"].dropna().unique().tolist())]
 
-if "ItemExt" not in df_pre.columns:
-    df_pre["ItemExt"] = df_pre.apply(lambda r: classify_any(r), axis=1)
-
-# --------- Ítems sin chips preseleccionados (sidebar derecha) ---------
-avail_items = [it for it in EXT_ITEMS if it in set(df_pre["ItemExt"].dropna().unique().tolist())]
-default_items = []  # nada preseleccionado
 with st.sidebar:
+    default_items = []
     sel_items = st.multiselect("Ítems", avail_items, default_items, key="items_selector")
-# Dataset FINAL: si no hay selección, usar todo
-df_f = df_pre[df_pre["ItemExt"].isin(sel_items)].copy() if sel_items else df_pre.copy()
-# ----------------------------------------------------------------------
+
+# -------- Dataset filtrado --------
+if USE_SQL and use_db:
+    df_pre = fetch_filtered(DB_PATH, start_ts, end_ts,
+                            sel_users or None, sel_turns or None,
+                            sel_items or None)
+else:
+    df_pre = df_all.copy()
+    if sel_users: df_pre = df_pre[df_pre["Usuario"].isin(sel_users)]
+    if sel_turns: df_pre = df_pre[df_pre["Turno"].isin(sel_turns)]
+    df_pre = df_pre[(df_pre["DatetimeOper"] >= start_ts) & (df_pre["DatetimeOper"] < end_ts)]
+    if sel_items: df_pre = df_pre[df_pre["ItemExt"].isin(sel_items)]
+
+df_f = df_pre.copy()
 
 with st.sidebar:
     st.markdown("---")
     st.download_button("⬇️ Descargar filtrado (CSV)", data=df_f.to_csv(index=False).encode("utf-8"),
                        file_name="filtrado_montacargas.csv", mime="text/csv")
 
+# Export XLSX con KPIs
+if btn_export and not df_f.empty:
+    buf = io.BytesIO()
+    kpi = pd.DataFrame({
+        "Órdenes (filtrado)": [len(df_f)],
+        "Usuarios únicos": [df_f["Usuario"].nunique()],
+        "Turno A": [(df_f["Turno"]=="Turno A").sum()],
+        "Turno B": [(df_f["Turno"]=="Turno B").sum()],
+    })
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        df_f.to_excel(w, "datos", index=False)
+        kpi.to_excel(w, "kpi", index=False)
+    st.download_button("⬇️ Descargar XLSX (datos+kpi)", data=buf.getvalue(),
+                       file_name="montacargas_export.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 if df_f.empty:
     st.info("No hay datos con el filtro actual."); st.stop()
+
+# =========================================================
+# [S7.2] Panel QA de datos
+# =========================================================
+with st.expander("🧪 Calidad de datos", expanded=False):
+    dup = df_f.duplicated(subset=["Usuario","Orden","Ubic.proced","Ubicación de destino","ItemRaw","Datetime"]).sum()
+    nat_dt = df_f["Datetime"].isna().sum()
+    off_turn = df_f["Turno"].isna().sum()
+    st.write(f"Duplicados potenciales: {dup}")
+    st.write(f"Fechas/hours inválidas (NaT): {nat_dt}")
+    st.write(f"Sin turno detectado: {off_turn}")
 
 # =========================================================
 # [S8] Helpers visuales / KPIs
@@ -660,10 +706,11 @@ def render_kpis(df_filtered: pd.DataFrame):
     """, unsafe_allow_html=True)
 
 # =========================================================
-# [S9] Vista 1 — TM por usuario/turno (usa df_f con filtro de ítems)
+# [S9] Vista 1 — TM por usuario/turno (usa df_f)
 # =========================================================
 def view_tm_por_usuario_turno():
     render_section_title("Tiempo Muerto — dos barras por Usuario (Turno A y B), apilado por ítem")
+    THRESH_MIN = st.session_state.get("THRESH_MIN", 15)
 
     dtmp = df_f.copy()
     df_g = dtmp.sort_values(["Usuario","DatetimeOper"]).copy()
@@ -677,7 +724,7 @@ def view_tm_por_usuario_turno():
            TURNOS["Turno B"]["lunch"], TURNOS["Turno B"]["fuel"]]
     rows = []
     for _, r in df_g.iterrows():
-        start = r["prev_dt"]; end = r["DatetimeOper"]; date = r["FechaOper"]
+        start = r["prev_dt"]; end = r["DatetimeOper"]; date_op = r["FechaOper"]
         gap = (end - start).total_seconds()/60.0
         if gap <= 0: continue
 
@@ -688,11 +735,11 @@ def view_tm_por_usuario_turno():
             if seg_start < win_start: parts.append((seg_start, max(seg_start, win_start)))
             if seg_end > win_end:     parts.append((min(seg_end, win_end), seg_end))
             return [(s,e) for (s,e) in parts if e > s]
-        def subtract_windows(seg_start, seg_end, date, windows):
+        def subtract_windows(seg_start, seg_end, date_x, windows):
             segs = [(seg_start, seg_end)]
             for st_t, en_t in windows:
-                st_w = pd.Timestamp.combine(pd.Timestamp(date), st_t)
-                en_w = pd.Timestamp.combine(pd.Timestamp(date), en_t)
+                st_w = pd.Timestamp.combine(pd.Timestamp(date_x), st_t)
+                en_w = pd.Timestamp.combine(pd.Timestamp(date_x), en_t)
                 new = []
                 for s, e in segs:
                     new.extend(subtract_window(s, e, st_w, en_w))
@@ -700,7 +747,7 @@ def view_tm_por_usuario_turno():
                 if not segs: break
             return segs
 
-        segs = subtract_windows(start, end, date, EXC)
+        segs = subtract_windows(start, end, date_op, EXC)
         if not segs: continue
         adj = sum((e - s).total_seconds()/60.0 for s, e in segs)
         if adj > THRESH_MIN:
@@ -708,11 +755,9 @@ def view_tm_por_usuario_turno():
 
     dead_ext = pd.DataFrame(rows)
     if dead_ext.empty:
-        st.info("No se detectó TM > 15 min con el filtro actual."); return
+        st.info("No se detectó TM con el umbral actual."); return
 
     tm_ut = dead_ext.groupby(["Usuario","Turno","ItemExt"])["AdjMin"].sum().reset_index()
-    tm_ut = tm_ut[tm_ut["ItemExt"].isin(sel_items)] if sel_items else tm_ut
-
     g = tm_ut.copy()
     g["TurnoAB"] = g["Turno"].str.replace("Turno ","", regex=False)
     g["UsuarioTurnoShort"] = g.apply(lambda r: _short_label(r["Usuario"], r["TurnoAB"]), axis=1)
@@ -729,15 +774,14 @@ def view_tm_por_usuario_turno():
 
     chart_is_h = (st.session_state.get("chart_type", "Barra horizontal") == "Barra horizontal")
     if chart_is_h:
-        height = max(320, 24*len(order_axis) + 110)  # [MOBILE]
+        height = max(320, 24*len(order_axis) + 110)
         fig = px.bar(g, x="Min", y="UsuarioTurnoShort", color="ItemExt", orientation="h",
                      barmode="stack",
-                     category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": (sel_items if sel_items else avail_items)},
+                     category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": avail_items},
                      color_discrete_map=EXT_COLOR_MAP,
                      custom_data=["ItemExt","Min"], height=height)
         fig.update_traces(hovertemplate=hover_tmpl_h, marker_line_width=0, opacity=0.95, cliponaxis=False)
         fig.update_yaxes(categoryorder="array", categoryarray=order_axis, tickfont=dict(size=12))
-
         totals = (g.groupby("UsuarioTurnoShort")["Min"].sum().reindex(order_axis))
         fig.add_trace(go.Scatter(x=totals.values, y=totals.index.tolist(), mode="text",
                                  text=[f"{v:.0f} min" for v in totals.values],
@@ -748,20 +792,20 @@ def view_tm_por_usuario_turno():
         _responsive_bar_style(fig, len(order_axis))
         fig.update_layout(margin=dict(t=10,b=10,l=10,r=110), legend_title_text="Ítem")
     else:
-        height = max(420, 24*len(order_axis) + 60)  # [MOBILE]
+        height = max(420, 24*len(order_axis) + 60)
         fig = px.bar(g, x="UsuarioTurnoShort", y="Min", color="ItemExt", barmode="stack",
-                     category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": (sel_items if sel_items else avail_items)},
+                     category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": avail_items},
                      color_discrete_map=EXT_COLOR_MAP,
                      custom_data=["ItemExt","Min"], height=height)
         fig.update_traces(hovertemplate=hover_tmpl_h, marker_line_width=0, opacity=0.95, cliponaxis=False)
-        tick_angle = -65 if len(order_axis) > 8 else -30  # [MOBILE]
+        tick_angle = -65 if len(order_axis) > 8 else -30
         fig.update_xaxes(categoryorder="array", categoryarray=order_axis, tickangle=tick_angle, tickfont=dict(size=10))
         totals = (g.groupby("UsuarioTurnoShort")["Min"].sum().reindex(order_axis))
         ymax = float(totals.max())*1.18
         fig.update_yaxes(range=[0, ymax])
         fig.add_trace(go.Bar(x=totals.index.tolist(), y=totals.values,
                              marker_color='rgba(0,0,0,0)', showlegend=False, hoverinfo="skip",
-                             text=[f"{v:.0f}" for v in totals.values],  # [MOBILE] sin "min"
+                             text=[f"{v:.0f}" for v in totals.values],
                              textposition="outside", textfont=dict(size=10, color=ANN_COL), cliponaxis=False))
         _responsive_bar_style(fig, len(order_axis))
         fig.update_layout(margin=dict(t=10,b=10,l=10,r=10), legend_title_text="Ítem")
@@ -774,7 +818,6 @@ def view_tm_por_usuario_turno():
 # =========================================================
 def view_ordenes_ot():
     render_section_title("Órdenes OT — total de movimientos por usuario y turno")
-
     cnt = (df_f.groupby(["Usuario","Turno","ItemExt"]).size().reset_index(name="CNT"))
     if cnt.empty:
         st.info("No hay órdenes en el filtro actual para 'Órdenes OT'."); return
@@ -790,16 +833,15 @@ def view_ordenes_ot():
             if k in present_keys: order_axis.append(k)
 
     n_bars = len(order_axis)
-    show_totals = n_bars <= 12  # [MOBILE]
+    show_totals = n_bars <= 12
     tick_angle = -65 if n_bars > 8 else -30
 
-    # [MOBILE] Muchísimos usuarios => barras horizontales
     if n_bars > 14:
         hover_tmpl_h = "Ítem: %{customdata[0]}<br>Órdenes: %{customdata[1]:.0f}<br>%{customdata[2]}<extra></extra>"
         height = max(440, 22*n_bars + 120)
         fig = px.bar(
             cnt, y="UsuarioTurnoShort", x="CNT", color="ItemExt", barmode="stack",
-            category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": (sel_items if sel_items else avail_items)},
+            category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": avail_items},
             color_discrete_map=EXT_COLOR_MAP,
             custom_data=["ItemExt","CNT","UsuarioTurnoShort"], height=height, orientation="h"
         )
@@ -815,10 +857,10 @@ def view_ordenes_ot():
         fig.update_layout(margin=dict(t=40, b=10, l=10, r=110), legend_title_text="Ítem")
     else:
         hover_tmpl = "Ítem: %{customdata[0]}<br>Órdenes: %{customdata[1]:.0f}<br>%{customdata[2]}<extra></extra>"
-        height = max(520, 26*n_bars + 100)  # [MOBILE]
+        height = max(520, 26*n_bars + 100)
         fig = px.bar(
             cnt, x="UsuarioTurnoShort", y="CNT", color="ItemExt", barmode="stack",
-            category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": (sel_items if sel_items else avail_items)},
+            category_orders={"UsuarioTurnoShort": order_axis, "ItemExt": avail_items},
             color_discrete_map=EXT_COLOR_MAP,
             custom_data=["ItemExt","CNT","UsuarioTurnoShort"], height=height
         )
@@ -849,13 +891,12 @@ def view_ordenes_ot():
         fig.update_layout(margin=dict(t=50, b=10, l=10, r=100), legend_title_text="Ítem")
 
     apply_plot_theme(fig)
-
     c1, c2 = st.columns([3, 1])
     with c1: st.plotly_chart(fig, use_container_width=True)
     with c2: render_kpis(df_f)
 
 # =========================================================
-# [S11] Vista 3 — Inicio/Fin con +24h solo cuando hubo extra (usa df_pre)
+# [S11] Vista 3 — Inicio/Fin
 # =========================================================
 def minutes_of_day(ts: pd.Timestamp) -> float:
     t = ts.time(); return t.hour*60 + t.minute + t.second/60.0
@@ -882,7 +923,6 @@ def classify_any_row(row) -> str:
 
 def view_inicio_fin_turno():
     render_section_title("Inicio y fin de turno — hora por Usuario/Turno (promedio o real)")
-
     d = df_pre.copy()
     if "ItemExt_any" not in d.columns:
         d["ItemExt_any"] = d.apply(classify_any_row, axis=1)
@@ -890,7 +930,6 @@ def view_inicio_fin_turno():
     recs = []
     for (usr, fecha_op, turno), g in d.sort_values("DatetimeOper").groupby(["Usuario","FechaOper","Turno"]):
         if g.empty: continue
-
         g = g.copy()
         g["t_vis"] = g["DatetimeOper"].apply(lambda ts: minutes_for_plot(ts, turno))
 
@@ -909,7 +948,7 @@ def view_inicio_fin_turno():
         r_cie = g.loc[g["t_vis"].idxmax()]
         t_cie_vis = float(r_cie["t_vis"]); it_cie = r_cie["ItemExt_any"]
 
-        had_extra = bool(g["IsExtra"].any())
+        had_extra = bool((g["Turno"]=="Turno B") & (g["DatetimeOper"].dt.time < LATE_B_CUTOFF)).any()
 
         recs.append({
             "Usuario": usr, "Turno": turno, "FechaOper": fecha_op,
@@ -922,7 +961,7 @@ def view_inicio_fin_turno():
         return
 
     dd = pd.DataFrame(recs)
-    one_day = (dd["FechaOper"].nunique() == 1)
+    one_day = (start_ts.date() == (end_ts - pd.Timedelta(days=1)).date())
 
     agg_rows = []
     for (usr, turno), g in dd.groupby(["Usuario","Turno"]):
@@ -985,7 +1024,6 @@ def view_inicio_fin_turno():
 
     hover_tmpl = "Hito: %{customdata[0]}<br>Hora: %{customdata[1]}<br>%{customdata[2]}<br>Ítem más común: %{customdata[3]}<br>Horas extra: %{customdata[4]}<extra></extra>"
 
-    # [MOBILE] Cambia a horizontal si hay muchos usuarios para legibilidad
     many = len(order_axis) > 14
     if many:
         height = max(460, 22*len(order_axis) + 120)
